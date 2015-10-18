@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
-import signal
-import json
+import atexit
 
 from app import app
 
@@ -9,12 +8,10 @@ from sensors.base import Sensor
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
 
 
-def sig_handler(signum, frame):
+@atexit.register
+def goodbye():
     logging.info('Shutting down...')
     Sensor.stop_all()
-    exit()
-
-signal.signal(signal.SIGINT, sig_handler)
 
 
 app.run(
