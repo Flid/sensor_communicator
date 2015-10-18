@@ -1,18 +1,57 @@
 # -*- coding: utf-8 -*-
 import logging
+from logging.config import dictConfig
 import atexit
+import signal
+import os
 
 from app import app
 
 from sensors.base import Sensor
-logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
+
+dictConfig({
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+        },
+    },
+    'handlers': {
+        'default': {
+            'level':'INFO',
+            'class':'logging.handlers.TimedRotatingFileHandler',
+            'when': 'midnight',
+            'backupCount': 7,
+            'filename': '/var/log/sensors.log',
+            'formatter': 'standard',
+        },
+    },
+    'loggers': {
+        '': {
+            'handlers': ['default'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+        'urllib3': {
+            'handlers': ['default'],
+            'level': 'WARN',
+            'propagate': False,
+        },
+    }
+})
 
 
 @atexit.register
-def goodbye():
-    logging.info('Shutting down...')
+def on_exit():
     Sensor.stop_all()
 
+
+def signal_hendler(*args, **kwargs):
+    exit(1)
+
+
+signal.signal(signal.SIGINT, signal_hendler)
 
 app.run(
     host='127.0.0.1',

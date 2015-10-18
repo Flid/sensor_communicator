@@ -17,6 +17,7 @@ class Sensor(object):
     LOOP_DELAY = 1
     ERRORS_THRESHOLD = 10
     DB_ENABLED = False
+    NAME = '<None>'
     _active_sensors = []
 
     def __init__(self):
@@ -28,16 +29,19 @@ class Sensor(object):
         self._conn = None
 
     def start(self):
+        log.info('Starting sensor %s', self.NAME)
         Sensor._active_sensors.append(self)
         self.should_stop = False
         self.thread.start()
 
     def stop(self):
+        log.info('Stopping sensor %s', self.NAME)
         self.should_stop = True
         Sensor._active_sensors.remove(self)
 
     @staticmethod
     def stop_all():
+        log.info('Stopping all the sensors...')
         while Sensor._active_sensors:
             sensor = Sensor._active_sensors[-1]
             sensor.stop()
@@ -67,21 +71,22 @@ class Sensor(object):
 
     def _loop(self):
         while True:
-            if self.should_stop:
-                return
-
-            sleep(self.LOOP_DELAY)
-
             try:
                 self._iteration()
+                self.errors_count = 0
             except SensorError as ex:
                 log.error('Error getting %s sensor data: %s' % (self.__class__, ex))
                 self._errors_count += 1
                 if self._errors_count >= self.ERRORS_THRESHOLD:
                     self.set_value(self.ERROR_VALUE)
-                continue
+            finally:
+                for _ in xrange(self.LOOP_DELAY):
+                    if self.should_stop:
+                        return
+                    sleep(1)
 
-            self.errors_count = 0
+
+
 
     def db_execute(self, command):
         if not self._conn:

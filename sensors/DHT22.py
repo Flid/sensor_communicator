@@ -9,8 +9,10 @@ from .base import Sensor, SensorError
 
 log = logging.getLogger(__name__)
 
+
 class DHT22(Sensor):
-    LOOP_DELAY = 2
+    LOOP_DELAY = 60
+    NAME = 'DHT22'
 
     def __init__(self, gpio_number=24):
         super(DHT22, self).__init__()
@@ -34,7 +36,7 @@ dht22.start()
 
 
 @app.route('/sensors/dht22/read')
-def read_values():
+def read_dht22_values():
     return json.dumps({
         'status': 'ok',
         'data': {
