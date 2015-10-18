@@ -30,7 +30,7 @@ class DHT22(Sensor):
 
 
 dht22 = DHT22()
-
+dht22.start()
 
 
 @app.route('/sensors/dht22/read')

@@ -17,8 +17,6 @@ def sig_handler(signum, frame):
 signal.signal(signal.SIGINT, sig_handler)
 
 
-from sensors.DHT22 import dht22
-dht22.start()
 app.run(
     host='127.0.0.1',
     port=10100,

@@ -2,6 +2,8 @@
 from threading import Thread, Lock
 import logging
 from time import sleep
+from db import conn_pool
+from psycopg2 import Error as PsycopgError
 
 log = logging.getLogger(__name__)
 
@@ -14,6 +16,7 @@ class Sensor(object):
     ERROR_VALUE = 'ERROR'
     LOOP_DELAY = 1
     ERRORS_THRESHOLD = 10
+    DB_ENABLED = False
     _active_sensors = []
 
     def __init__(self):
@@ -22,6 +25,7 @@ class Sensor(object):
         self._lock = Lock()
         self.thread = Thread(target=self._loop)
         self._data = {}
+        self._conn = None
 
     def start(self):
         Sensor._active_sensors.append(self)
@@ -78,3 +82,15 @@ class Sensor(object):
                 continue
 
             self.errors_count = 0
+
+    def db_execute(self, command):
+        if not self._conn:
+            self._conn = conn_pool.getconn()
+
+        try:
+            cur = self._conn.cursor()
+            cur.execute(command)
+            cur.commit()
+        except PsycopgError as ex:
+            log.error('Error while executing request %s: %s', command, ex)
+            self._conn.rollback()
