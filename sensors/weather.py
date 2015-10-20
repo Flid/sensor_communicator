@@ -50,6 +50,7 @@ WEATHER_CODE_RAIN_WEIGHTS = {
 
 class WeatherSensor(Sensor):
     LOOP_DELAY = 60
+    ERRORS_THRESHOLD = 2
     NAME = 'WEATHER'
 
     # Forecast has data for every 3 hours, so let'sconsider only 12 hours

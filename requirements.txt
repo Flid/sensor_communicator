@@ -1,4 +1,6 @@
 flask
+mock
+requests
 psycopg2
 # Can not be installed in virtual env, should be installed manually:
 # git+ssh://git@github.com/adafruit/Adafruit_Python_DHT.git

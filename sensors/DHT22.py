@@ -4,8 +4,14 @@ import logging
 import json
 
 from app import app
-import Adafruit_DHT
 from .base import Sensor, SensorError
+
+try:
+    import Adafruit_DHT
+except ImportError:
+    # Used mainly for testing
+    from mock import Mock
+    Adafruit_DHT = Mock(read=Mock(return_value=(None, None)))
 
 log = logging.getLogger(__name__)
 

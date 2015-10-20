@@ -3,7 +3,10 @@ from threading import Thread, Lock
 import logging
 from time import sleep
 from db import conn_pool
+import json
+
 from psycopg2 import Error as PsycopgError
+from app import app
 
 log = logging.getLogger(__name__)
 
@@ -13,11 +16,14 @@ class SensorError(Exception):
 
 
 class Sensor(object):
-    ERROR_VALUE = 'ERROR'
+    STATUS_ERROR = 'error'
+    STATUS_OK = 'ok'
+    STATUS_IDLE = 'idle'
+
     LOOP_DELAY = 1
     ERRORS_THRESHOLD = 10
     DB_ENABLED = False
-    NAME = '<None>'
+    NAME = '<NoName>'
     _active_sensors = []
 
     def __init__(self):
@@ -27,6 +33,10 @@ class Sensor(object):
         self.thread = Thread(target=self._loop)
         self._data = {}
         self._conn = None
+
+        self.set_value('status', self.STATUS_IDLE)
+
+        assert isinstance(self.LOOP_DELAY, int)
 
     def start(self):
         log.info('Starting sensor %s', self.NAME)
@@ -38,6 +48,7 @@ class Sensor(object):
         log.info('Stopping sensor %s', self.NAME)
         self.should_stop = True
         Sensor._active_sensors.remove(self)
+        self.set_value('status', self.STATUS_IDLE)
 
     @staticmethod
     def stop_all():
@@ -62,10 +73,10 @@ class Sensor(object):
         finally:
             self._lock.release()
 
-    def set_value(self, *args, **kwargs):
+    def set_value(self, key, value):
         self._lock.acquire()
         try:
-            self._set_value(*args, **kwargs)
+            self._set_value(key, value)
         finally:
             self._lock.release()
 
@@ -74,19 +85,23 @@ class Sensor(object):
             try:
                 self._iteration()
                 self.errors_count = 0
-            except SensorError as ex:
-                log.error('Error getting %s sensor data: %s' % (self.__class__, ex))
+                self.set_value('status', self.STATUS_OK)
+            except Exception as ex:
+                if isinstance(ex, SensorError):
+                    log.error('Error getting %s sensor data: %s' % (self.__class__, ex))
+                else:
+                    log.error('Unexpected exception.', exc_info=ex)
+
                 self._errors_count += 1
                 if self._errors_count >= self.ERRORS_THRESHOLD:
-                    self.set_value(self.ERROR_VALUE)
+                    self.set_value('status', self.STATUS_ERROR)
+
+                self.set_value('status', self.STATUS_ERROR)
             finally:
                 for _ in xrange(self.LOOP_DELAY):
                     if self.should_stop:
                         return
                     sleep(1)
-
-
-
 
     def db_execute(self, command):
         if not self._conn:
@@ -99,3 +114,21 @@ class Sensor(object):
         except PsycopgError as ex:
             log.error('Error while executing request %s: %s', command, ex)
             self._conn.rollback()
+
+
+@app.route('/sensors/list')
+def list_sensors():
+    sensors = []
+    for s in Sensor._active_sensors:
+        sensors.append({
+            'name': s.NAME,
+            'loop_delay': s.LOOP_DELAY,
+            'status': s.get_value('status'),
+            'errors_count': s._errors_count,
+            'errors_threshold': s.ERRORS_THRESHOLD,
+        })
+
+    return json.dumps({
+        'status': 'ok',
+        'data': sensors,
+    })

@@ -19,8 +19,8 @@ dictConfig({
     },
     'handlers': {
         'default': {
-            'level':'INFO',
-            'class':'logging.handlers.TimedRotatingFileHandler',
+            'level': 'DEBUG',
+            'class': 'logging.handlers.TimedRotatingFileHandler',
             'when': 'midnight',
             'backupCount': 7,
             'filename': '/var/log/sensors.log',
@@ -38,16 +38,26 @@ dictConfig({
             'level': 'WARN',
             'propagate': False,
         },
+        'requests': {
+            'handlers': ['default'],
+            'level': 'WARN',
+            'propagate': False,
+        },
     }
 })
+
+log = logging.getLogger()
 
 
 @atexit.register
 def on_exit():
+    log.info('Exitting...')
     Sensor.stop_all()
 
 
 def signal_hendler(*args, **kwargs):
+    log.info('SIGINT received')
+    on_exit()
     exit(1)
 
 
