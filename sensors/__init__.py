@@ -3,4 +3,5 @@ from . import (
     base,
     DHT22,
     weather,
+    endomondo,
 )
