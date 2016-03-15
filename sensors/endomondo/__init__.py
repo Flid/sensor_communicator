@@ -57,7 +57,6 @@ class EndomondoSensor(Sensor):
 
         return distance_by_day
 
-
     def _get_workouts_history(self, after=None, prev_distance=0,
                               last_workout_distance=0, workouts_log=None):
         if not after:

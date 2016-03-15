@@ -93,10 +93,8 @@ class Sensor(object):
                     log.error('Unexpected exception.', exc_info=ex)
 
                 self._errors_count += 1
-                if self._errors_count >= self.ERRORS_THRESHOLD:
+                if self.ERRORS_THRESHOLD and self._errors_count >= self.ERRORS_THRESHOLD:
                     self.set_value('status', self.STATUS_ERROR)
-
-                self.set_value('status', self.STATUS_ERROR)
             finally:
                 for _ in xrange(self.LOOP_DELAY):
                     if self.should_stop:

@@ -16,6 +16,8 @@ RAIN = 1.0
 HEAVY_RAIN = 2.0
 DRIZZLE = 0.7
 
+from kivy.uix.image import AsyncImage
+
 
 WEATHER_CODE_RAIN_WEIGHTS = {
     200: LIGHT_RAIN,            # thunderstorm with light rain
@@ -49,6 +51,7 @@ WEATHER_CODE_RAIN_WEIGHTS = {
     616: RAIN,                  # rain and snow
     620: LIGHT_RAIN,            # light shower snow
 }
+
 
 class WeatherSensor(Sensor):
     LOOP_DELAY = 60
