@@ -14,3 +14,7 @@ class PowerControlNode(Node):
     # We only allow one device of each type for now
     NODE_ID = 1
     MESSAGE_CLASS = PowerControlMessage
+
+    LISTEN_PIPE_ADDR = 0x01
+    SEND_PIPE_ADDR = 0x01
+    PIPE_NUMBER_NUMBER = 1

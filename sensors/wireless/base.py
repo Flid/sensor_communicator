@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 import logging
+import json
+
+from app import app
+from RF24 import RF24_PA_HIGH, RF24_250KBPS, RF24
+import RPi.GPIO as GPIO
 
 from ..base import Sensor, SensorError
-from .hw_communications import (
-    init as init_hw,
-    read_data,
-    send_data,
-)
 
 log = logging.getLogger(__name__)
 
@@ -14,8 +14,8 @@ log = logging.getLogger(__name__)
 class Message(object):
     MAX_DATA_LEN = 31  # Max payload size one byte for message type
 
-    # Send every N seconds. After M times without response, terminate the node.
-    TYPE_PING = 0
+    # Send every N seconds. After M times without response node gows offline.
+    TYPE_STATUS = 0
     # Asking for a value of the field. Field id should be passed in data.
     TYPE_FIELD_REQUEST = 1
     # Set some value of the field. Should be followed by field id and actual value.
@@ -45,10 +45,6 @@ class Message(object):
         """
         return (node_id, type)
         """
-        if isinstance(header_byte, basestring):
-            assert len(header_byte) == 1
-            header_byte = ord(header_byte)
-
         return header_byte % 8, header_byte / 8
 
     def format_header(self):
@@ -58,12 +54,12 @@ class Message(object):
     @classmethod
     def parse(cls, raw_data):
         node_id, msg_type = Message.parse_header(raw_data[0])
-        msg_type = ord(raw_data[0])
+        msg_type = raw_data[0]
         data = raw_data[1:]
 
         msg = cls(node_id, msg_type)
 
-        if msg_type == cls.TYPE_PING:
+        if msg_type == cls.TYPE_STATUS:
             return msg
 
         elif msg_type == cls.TYPE_FIELD_RESPONSE:
@@ -101,18 +97,50 @@ class Node(object):
     STATE_ONLINE = 'online'
     STATE_OFFLINE = 'offline'
     NODE_ID = None
+    LISTEN_PIPE_ADDR = None
+    LISTEN_PIPE_NUMBER = None
+    SEND_PIPE_ADDR = None
 
-    PING_EVERY_N_LOOPS = 10
+    ASK_STATUS_EVERY_N_LOOPS = 10
     # Once we are about to send Nth ping in a row without response - give up.
     TERMINATE_AFTER_N_ERRORS = 5
 
     MESSAGE_CLASS = Message
 
-    def __init__(self):
+    PAYLOAD_SIZE = 32
+    BASE_SEND_ADDR = 0x53654e6400
+    BASE_RECV_ADDR = 0x5265437600
+
+    def __init__(self, radio):
+        log.info('Initializing wireless node %s', self.__class__.__name__)
         self.state = self.STATE_ONLINE
         self._fields = {}
         self._errors_in_a_row = 0
-        self._lops_without_pings_left = 0
+        self._ask_status_after = 0
+        self._radio = radio
+
+        if self.LISTEN_PIPE_NUMBER is not None:
+            log.info(
+                'Start listening on pipe %s addr=%s',
+                self.LISTEN_PIPE_NUMBER,
+                self.recv_addr,
+            )
+            radio.openReadingPipe(
+                self.LISTEN_PIPE_NUMBER,
+                self.recv_addr,
+            )
+
+    @property
+    def recv_addr(self):
+        return self.BASE_RECV_ADDR | self.LISTEN_PIPE_ADDR
+
+    @property
+    def send_addr(self):
+        return self.BASE_SEND_ADDR | self.SEND_PIPE_ADDR
+
+    @property
+    def name(self):
+        return self.__class__.__name__
 
     def get_value(self, field_name):
         return self._fields.get(field_name)
@@ -136,15 +164,20 @@ class Node(object):
             ),
         )
 
-    def _send_data(self, data_bytes):
-        """
-        Actual low-level data sending.
-        """
-        raise NotImplementedError()
+    def _send_data_to_radio(self, payload):
+        payload = bytearray(payload)
+        log.debug('%s: Sending length %s', self.name, len(payload))
+        try:
+            self._radio.stopListening()
+            self._radio.openWritingPipe(self.send_addr)
+            if not self._radio.write(payload):
+                raise SensorError('Failed to send data to %s' % self.name)
+        finally:
+            self._radio.startListening()
 
     def send_data(self, msg):
         try:
-            self._send_data(msg.format())
+            self._send_data_to_radio(msg.format())
             self._errors_in_a_row = 0
         except SensorError as ex:
             log.error(
@@ -163,23 +196,21 @@ class Node(object):
                     'Request failed %s times in a row' % self.TERMINATE_AFTER_N_ERRORS,
                 )
 
-    def send_ping(self):
-        self._lops_without_pings_left += 1
-        if self._lops_without_pings_left < self.PING_EVERY_N_LOOPS:
+    def ask_status(self):
+        self._ask_status_after -= 1
+        if self._ask_status_after > 0:
             return
 
-        self._lops_without_pings_left = 0
+        self._ask_status_after = self.ASK_STATUS_EVERY_N_LOOPS
 
         self.send_data(
             self.MESSAGE_CLASS(
                 self.NODE_ID,
-                msg_type=self.MESSAGE_CLASS.TYPE_PING,
+                msg_type=self.MESSAGE_CLASS.TYPE_STATUS,
             ),
         )
 
-    def process_new_message(self, raw_bytes):
-        msg = self.MESSAGE_CLASS.parse(raw_bytes)
-
+    def process_new_message(self, msg):
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_FIELD_RESPONSE:
             self._fields[msg.field_name] = msg.data
 
@@ -198,8 +229,14 @@ class WirelessSensor(Sensor):
     LOOP_DELAY = 1
     ERRORS_THRESHOLD = None
 
+    RF24_PINS = [25, 8]
+    CHANNEL = 0x30
+    RETRIES_DELAY = 5
+    RETRIES_COUNT = 15
+    MAX_PAYLOAD_SIZE = 32
+
     def __init__(self):
-        super(Sensor, self).__init__()
+        super(WirelessSensor, self).__init__()
 
         from .power_control import PowerControlNode
 
@@ -208,40 +245,42 @@ class WirelessSensor(Sensor):
         }
         self._active_nodes = {}
 
-        init_hw()
+        self._radio = self._get_radio()
+        self._init_nodes()
 
-    def _get_or_create_node(self, node_id):
-        node = self._active_nodes.get(node_id)
+    def _get_radio(self):
+        radio = RF24(*self.RF24_PINS)
+        radio.begin()
+        radio.setRetries(self.RETRIES_DELAY, self.RETRIES_COUNT)
 
-        if node is None or node.state == Node.STATE_ONLINE:
-            node_cls = self._node_by_id.get(node_id)
+        radio.setPALevel(RF24_PA_HIGH)
+        radio.setDataRate(RF24_250KBPS)
+        radio.setChannel(self.CHANNEL)
 
-            if not node_cls:
-                log.error('Node %s not found, skipping.', node_id)
-                raise SensorError()
+        return radio
 
-            node = node_cls()
-            self._active_nodes[node_id] = node
-
-        return node
-
-    def _terminate_node(self, node_id):
-        node = self._active_nodes.get(node_id)
-        if not node:
-            return
-
-        if node.state != Node.STATE_OFFLINE:
-            node.terminate()
-
-        self._active_nodes.pop(node_id, None)
-
-    def _cleanup_node(self, node_id):
+    def _init_nodes(self):
         """
-        If node is offline - remove it from actives.
+        Open needed listening pipes for all devices.
         """
-        node = self._active_nodes.get(node_id)
-        if node.state == Node.STATE_OFFLINE:
-            self._active_nodes.pop(node_id, None)
+        for node_id, node_cls in self._node_by_id.iteritems():
+            self._active_nodes[node_id] = node_cls(self._radio)
+
+    def _read_data_from_radio(self):
+        """
+        If there's some data available - read one message and return.
+        Else return None.
+        """
+        if self._radio.available():
+            payload = self._radio.read(self.MAX_PAYLOAD_SIZE)
+
+            log.debug(
+                'Got payload size=%s value=%s',
+                len(payload),
+                map(int, payload),
+            )
+
+            return payload
 
     def _iteration(self):
         """
@@ -249,29 +288,40 @@ class WirelessSensor(Sensor):
         """
 
         while True:
-            new_msg = read_data()
+            new_msg = self._read_data_from_radio()
             if not new_msg:
                 break
 
-            node_id, msg_type = Message.parse_header(ord(new_msg[0]))
+            node_id, msg_type = Message.parse_header(new_msg[0])
 
-            try:
-                node = self._get_or_create_node(node_id)
-                node.process_new_message(new_msg)
-            except Exception as ex:
-                if isinstance(ex, SensorError):
-                    # Message should already be logged
-                    self._cleanup_node(node_id)
-                else:
-                    log.exception('Error wile processing message.')
-                    self._terminate_node(node_id)
+            node = self._active_nodes.get(node_id)
 
+            if not node:
+                log.warning('Message for unknown node_id=%s' % node_id)
                 continue
 
+            node.process_new_message(
+                node.MESSAGE_CLASS.parse(new_msg),
+            )
+
         # Ping all devices if needed
-        for node in self._active_nodes:
+        for node in self._active_nodes.itervalues():
             try:
-                node.send_ping()
+                node.ask_status()
             except SensorError as ex:
                 log.error(str(ex))
                 node.terminate()
+
+
+wireless_sensor = WirelessSensor()
+wireless_sensor.start()
+
+
+@app.route('/sensors/wireless/read')
+def read_wireless_sensors():
+    return json.dumps({
+        'status': 'ok',
+        'data': {
+            # TODO
+        },
+    })
