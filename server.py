@@ -64,6 +64,6 @@ def signal_hendler(*args, **kwargs):
 signal.signal(signal.SIGINT, signal_hendler)
 
 app.run(
-    host='127.0.0.1',
+    host='0.0.0.0',
     port=10100,
 )

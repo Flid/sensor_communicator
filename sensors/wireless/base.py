@@ -2,6 +2,7 @@
 import logging
 import json
 
+from flask import request
 from app import app
 from RF24 import RF24_PA_HIGH, RF24_250KBPS, RF24
 import RPi.GPIO as GPIO
@@ -40,26 +41,16 @@ class Message(object):
         _field_numbers = {v: k for k, v in self.FIELD_NAMES}
         return _field_numbers[self.field_name]
 
-    @staticmethod
-    def parse_header(header_byte):
-        """
-        return (node_id, type)
-        """
-        return header_byte % 8, header_byte / 8
-
-    def format_header(self):
-        assert 0 <= self.node_id < 8
-        return chr(self.node_id + self.msg_type * 8)
-
     @classmethod
     def parse(cls, raw_data):
-        node_id, msg_type = Message.parse_header(raw_data[0])
-        msg_type = raw_data[0]
-        data = raw_data[1:]
+        node_id = raw_data[0]
+        msg_type = raw_data[1]
+        data = raw_data[2:]
 
         msg = cls(node_id, msg_type)
 
         if msg_type == cls.TYPE_STATUS:
+            msg.data = data[:1]
             return msg
 
         elif msg_type == cls.TYPE_FIELD_RESPONSE:
@@ -74,7 +65,7 @@ class Message(object):
         return msg
 
     def format(self):
-        data = self.format_header()
+        data = chr(self.msg_type)
 
         if self.msg_type == self.TYPE_FIELD_REQUEST:
             data += chr(self.field_id)
@@ -118,6 +109,7 @@ class Node(object):
         self._errors_in_a_row = 0
         self._ask_status_after = 0
         self._radio = radio
+        self.last_state = None
 
         if self.LISTEN_PIPE_NUMBER is not None:
             log.info(
@@ -211,6 +203,10 @@ class Node(object):
         )
 
     def process_new_message(self, msg):
+        log.debug('Received message of type %s, data %s' % (msg.msg_type, map(int, msg.data)))
+        if msg.msg_type == self.MESSAGE_CLASS.TYPE_STATUS:
+            self.last_state = map(int, msg.data)
+
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_FIELD_RESPONSE:
             self._fields[msg.field_name] = msg.data
 
@@ -247,6 +243,14 @@ class WirelessSensor(Sensor):
 
         self._radio = self._get_radio()
         self._init_nodes()
+
+    def get_node(self, node_id=None, name=None):
+        if node_id is not None:
+            return self._active_nodes.get(node_id)
+
+        for node in self._active_nodes.itervalues():
+            if node.NAME == name:
+                return node
 
     def _get_radio(self):
         radio = RF24(*self.RF24_PINS)
@@ -292,8 +296,7 @@ class WirelessSensor(Sensor):
             if not new_msg:
                 break
 
-            node_id, msg_type = Message.parse_header(new_msg[0])
-
+            node_id = int(new_msg[0])
             node = self._active_nodes.get(node_id)
 
             if not node:
@@ -317,11 +320,31 @@ wireless_sensor = WirelessSensor()
 wireless_sensor.start()
 
 
-@app.route('/sensors/wireless/read')
-def read_wireless_sensors():
+# Get basic state of all sensors
+@app.route('/sensors/wireless/<name>/read')
+def read_wireless_sensors(name):
+    node = wireless_sensor.get_node(name=name)
+    if not node:
+        return json.dumps({
+            'status': 'error',
+            'error_code': 'node_not_found',
+        })
+
     return json.dumps({
         'status': 'ok',
-        'data': {
-            # TODO
-        },
+        'state': node.last_state,
+    })
+
+
+# Get basic state of all sensors
+@app.route('/sensors/wireless/lamp/set_state')
+def set_lamp_state():
+    from .power_control import PowerControlNode
+    node = wireless_sensor.get_node(PowerControlNode.NODE_ID)
+
+    state = request.args.get('state') == '1'
+    node.set_state(state)
+    return json.dumps({
+        'status': 'ok',
+        'new_state': state,
     })
