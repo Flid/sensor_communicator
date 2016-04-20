@@ -1,15 +1,40 @@
 # -*- coding: utf-8 -*-
 import logging
-import json
 
-from flask import request
-from app import app
 from RF24 import RF24_PA_HIGH, RF24_250KBPS, RF24
 import RPi.GPIO as GPIO
 
 from ..base import Sensor, SensorError
 
 log = logging.getLogger(__name__)
+
+
+class State(object):
+    ALLOWED_KEYS = set()
+
+    def __init__(self, node, data):
+        self.node = node
+        self.data = data
+
+    @classmethod
+    def _parse_raw_data(cls, raw_data):
+        return {}
+
+    @classmethod
+    def from_message(cls, node, msg):
+        assert msg.msg_type == Message.TYPE_STATUS
+
+        data = cls._parse_raw_data(msg.data)
+        log.info('Parsed state %s', data)
+        return cls(node=node, data=data)
+
+    def _apply_new_state(self, old, new):
+        pass
+
+    def update(self, data):
+        data = {k: v for k, v in data.iteritems() if k in self.ALLOWED_KEYS}
+        self._apply_new_state(self.data, data)
+        self.data.update(data)
 
 
 class Message(object):
@@ -85,18 +110,17 @@ class Message(object):
 
 
 class Node(object):
-    STATE_ONLINE = 'online'
-    STATE_OFFLINE = 'offline'
     NODE_ID = None
     LISTEN_PIPE_ADDR = None
     LISTEN_PIPE_NUMBER = None
     SEND_PIPE_ADDR = None
 
-    ASK_STATUS_EVERY_N_LOOPS = 10
+    ASK_STATUS_EVERY_N_LOOPS = 2
     # Once we are about to send Nth ping in a row without response - give up.
     TERMINATE_AFTER_N_ERRORS = 5
 
     MESSAGE_CLASS = Message
+    STATE_CLASS = State
 
     PAYLOAD_SIZE = 32
     BASE_SEND_ADDR = 0x53654e6400
@@ -104,12 +128,11 @@ class Node(object):
 
     def __init__(self, radio):
         log.info('Initializing wireless node %s', self.__class__.__name__)
-        self.state = self.STATE_ONLINE
         self._fields = {}
         self._errors_in_a_row = 0
         self._ask_status_after = 0
         self._radio = radio
-        self.last_state = None
+        self.state = None
 
         if self.LISTEN_PIPE_NUMBER is not None:
             log.info(
@@ -178,12 +201,11 @@ class Node(object):
                 self.NODE_ID,
                 str(ex),
             )
-            self._state = self.STATE_OFFLINE
 
             self._errors_in_a_row += 1
 
             if self._errors_in_a_row == self.TERMINATE_AFTER_N_ERRORS:
-                self.state = self.STATE_OFFLINE
+                self.state = None
                 raise SensorError(
                     'Request failed %s times in a row' % self.TERMINATE_AFTER_N_ERRORS,
                 )
@@ -205,7 +227,7 @@ class Node(object):
     def process_new_message(self, msg):
         log.debug('Received message of type %s, data %s' % (msg.msg_type, map(int, msg.data)))
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_STATUS:
-            self.last_state = map(int, msg.data)
+            self.state = self.STATE_CLASS.from_message(self, msg)
 
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_FIELD_RESPONSE:
             self._fields[msg.field_name] = msg.data
@@ -319,32 +341,3 @@ class WirelessSensor(Sensor):
 wireless_sensor = WirelessSensor()
 wireless_sensor.start()
 
-
-# Get basic state of all sensors
-@app.route('/sensors/wireless/<name>/read')
-def read_wireless_sensors(name):
-    node = wireless_sensor.get_node(name=name)
-    if not node:
-        return json.dumps({
-            'status': 'error',
-            'error_code': 'node_not_found',
-        })
-
-    return json.dumps({
-        'status': 'ok',
-        'state': node.last_state,
-    })
-
-
-# Get basic state of all sensors
-@app.route('/sensors/wireless/lamp/set_state')
-def set_lamp_state():
-    from .power_control import PowerControlNode
-    node = wireless_sensor.get_node(PowerControlNode.NODE_ID)
-
-    state = request.args.get('state') == '1'
-    node.set_state(state)
-    return json.dumps({
-        'status': 'ok',
-        'new_state': state,
-    })
