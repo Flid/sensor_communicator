@@ -8,6 +8,8 @@ import json
 from psycopg2 import Error as PsycopgError
 from app import app
 
+from .socket_server import server as SServer
+
 log = logging.getLogger(__name__)
 
 
@@ -79,6 +81,25 @@ class Sensor(object):
             self._set_value(key, value)
         finally:
             self._lock.release()
+
+    @staticmethod
+    def by_name(name):
+        for sensor in Sensor._active_sensors:
+            if sensor.name == name:
+                return sensor
+
+    def _process_socket_messages(self):
+        for sensor_name, data, fno in SServer.get_messages():
+            sensor = Sensor.by_name(sensor_name)
+
+            if not sensor:
+                log.warning('Socket message for unexpected sensor %s', sensor_name)
+                continue
+
+            try:
+                sensor.process_socket_message()
+            except Exception as ex:
+                log.warning('Error while processing socket message:', exc_info=ex)
 
     def _loop(self):
         while True:

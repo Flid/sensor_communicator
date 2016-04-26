@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+import logging
 import json
+
 from app import app
 from flask import request
 from .base import wireless_sensor
+
+logger = logging.getLogger(__name__)
 
 
 @app.route('/sensors/wireless/<name>/state', methods=['GET', 'POST'])
@@ -34,3 +38,4 @@ def read_wireless_sensors(name):
         node.state.update(request.form)
 
         return json.dumps({'status': 'ok'})
+

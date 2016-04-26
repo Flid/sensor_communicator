@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 import logging
 from time import time
+import socket
+import json
+from threading import Lock
 
 from RF24 import RF24_PA_HIGH, RF24_250KBPS, RF24
 import RPi.GPIO as GPIO
 
 from ..base import Sensor, SensorError
+from ..socket_server import server as SServer
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +40,21 @@ class State(object):
         data = {k: v for k, v in data.iteritems() if k in self.ALLOWED_KEYS}
         self._apply_new_state(self.data, data)
         self.data.update(data)
+
+    def dump_socket_response(self):
+        return json.dumps({
+            'node_id': self.node.NODE_ID,
+            'data': self.data,
+        })
+
+    def __eq__(self, other):
+        if not isinstance(other, State):
+            return False
+
+        return self.data == other.data and self.node == other.node
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
 
 class Message(object):
@@ -220,9 +239,20 @@ class Node(object):
         self.state = None
 
     def process_new_message(self, msg):
-        log.debug('Received message of type %s, data %s' % (msg.msg_type, map(int, msg.data)))
+        log.debug(
+            'Received message of type %s, data %s'
+            % (msg.msg_type, map(int, msg.data)),
+        )
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_STATUS:
-            self.state = self.STATE_CLASS.from_message(self, msg)
+            new_state = self.STATE_CLASS.from_message(self, msg)
+
+            SServer.send_broadcast_message(
+                new_state.dump_socket_response(),
+                self.name,
+                str(self.NODE_ID),
+            )
+
+            self.state = new_state
             self._last_status_update_time = time()
 
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_FIELD_RESPONSE:
@@ -306,6 +336,9 @@ class WirelessSensor(Sensor):
 
             return payload
 
+    def process_socket_message(self, data, fno):
+        pass
+
     def _iteration(self):
         """
         Read all new messages and route them to nodes.
@@ -316,6 +349,8 @@ class WirelessSensor(Sensor):
             node.check_if_offline()
 
         while True:
+            self._process_socket_messages()
+
             new_msg = self._read_data_from_radio()
             if not new_msg:
                 break
