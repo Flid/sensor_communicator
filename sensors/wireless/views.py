@@ -6,6 +6,7 @@ from app import app
 from flask import request
 from .base import wireless_sensor
 
+
 @app.route('/sensors/wireless/<name>/state', methods=['GET', 'POST'])
 def read_wireless_sensors(name):
     node = wireless_sensor.get_node(name=name)
@@ -27,7 +28,7 @@ def read_wireless_sensors(name):
         if node.state is None:
             return json.dumps({
                 'status': 'error',
-                'error_code': 'noe_offline',
+                'error_code': 'offline',
             })
 
         node.state.update(request.form)

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
+from time import time
 
 from RF24 import RF24_PA_HIGH, RF24_250KBPS, RF24
 import RPi.GPIO as GPIO
@@ -115,9 +116,9 @@ class Node(object):
     LISTEN_PIPE_NUMBER = None
     SEND_PIPE_ADDR = None
 
-    ASK_STATUS_EVERY_N_LOOPS = 2
-    # Once we are about to send Nth ping in a row without response - give up.
-    TERMINATE_AFTER_N_ERRORS = 5
+    # If we do not have status update for more then N
+    # seconds in a row - it's offline for us.
+    OFFLINE_AFTER_N_SECONDS = 5
 
     MESSAGE_CLASS = Message
     STATE_CLASS = State
@@ -126,11 +127,14 @@ class Node(object):
     BASE_SEND_ADDR = 0x53654e6400
     BASE_RECV_ADDR = 0x5265437600
 
+    SEND_RETRIES = 5
+    SEND_DELAY = 50  # msec
+
     def __init__(self, radio):
         log.info('Initializing wireless node %s', self.__class__.__name__)
         self._fields = {}
         self._errors_in_a_row = 0
-        self._ask_status_after = 0
+        self._last_status_update_time = time()
         self._radio = radio
         self.state = None
 
@@ -191,43 +195,35 @@ class Node(object):
             self._radio.startListening()
 
     def send_data(self, msg):
-        try:
-            self._send_data_to_radio(msg.format())
-            self._errors_in_a_row = 0
-        except SensorError as ex:
-            log.error(
-                'Error sending message %s to device %s: %s',
-                msg,
-                self.NODE_ID,
-                str(ex),
+        for i in range(self.SEND_RETRIES):
+            try:
+                self._send_data_to_radio(msg.format())
+                break
+            except SensorError as ex:
+                log.warning(
+                    '[%s/%s] Error sending message %s to device %s: %s',
+                    i + 1,
+                    self.SEND_RETRIES,
+                    msg,
+                    self.NODE_ID,
+                    str(ex),
+                )
+        else:
+            raise SensorError(
+                'Request failed %s times in a row' % self.SEND_RETRIES,
             )
 
-            self._errors_in_a_row += 1
-
-            if self._errors_in_a_row == self.TERMINATE_AFTER_N_ERRORS:
-                self.state = None
-                raise SensorError(
-                    'Request failed %s times in a row' % self.TERMINATE_AFTER_N_ERRORS,
-                )
-
-    def ask_status(self):
-        self._ask_status_after -= 1
-        if self._ask_status_after > 0:
+    def check_if_offline(self):
+        if time() - self._last_status_update_time < self.OFFLINE_AFTER_N_SECONDS:
+            # Everything's fine
             return
-
-        self._ask_status_after = self.ASK_STATUS_EVERY_N_LOOPS
-
-        self.send_data(
-            self.MESSAGE_CLASS(
-                self.NODE_ID,
-                msg_type=self.MESSAGE_CLASS.TYPE_STATUS,
-            ),
-        )
+        self.state = None
 
     def process_new_message(self, msg):
         log.debug('Received message of type %s, data %s' % (msg.msg_type, map(int, msg.data)))
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_STATUS:
             self.state = self.STATE_CLASS.from_message(self, msg)
+            self._last_status_update_time = time()
 
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_FIELD_RESPONSE:
             self._fields[msg.field_name] = msg.data
@@ -244,6 +240,7 @@ class WirelessSensor(Sensor):
     sending hello message with it's identifier.
     When it happens, we create a node and route all message to it later.
     """
+    NAME = 'nrf24l01'
     LOOP_DELAY = 1
     ERRORS_THRESHOLD = None
 
@@ -282,6 +279,7 @@ class WirelessSensor(Sensor):
         radio.setPALevel(RF24_PA_HIGH)
         radio.setDataRate(RF24_250KBPS)
         radio.setChannel(self.CHANNEL)
+        radio.startListening()
 
         return radio
 
@@ -313,6 +311,10 @@ class WirelessSensor(Sensor):
         Read all new messages and route them to nodes.
         """
 
+        # Check devices state
+        for node in self._active_nodes.itervalues():
+            node.check_if_offline()
+
         while True:
             new_msg = self._read_data_from_radio()
             if not new_msg:
@@ -328,14 +330,6 @@ class WirelessSensor(Sensor):
             node.process_new_message(
                 node.MESSAGE_CLASS.parse(new_msg),
             )
-
-        # Ping all devices if needed
-        for node in self._active_nodes.itervalues():
-            try:
-                node.ask_status()
-            except SensorError as ex:
-                log.error(str(ex))
-                node.terminate()
 
 
 wireless_sensor = WirelessSensor()

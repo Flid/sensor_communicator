@@ -88,7 +88,10 @@ class Sensor(object):
                 self.set_value('status', self.STATUS_OK)
             except Exception as ex:
                 if isinstance(ex, SensorError):
-                    log.error('Error getting %s sensor data: %s' % (self.__class__, ex))
+                    log.error(
+                        'Error getting %s sensor data: %s' % (self.__class__, ex),
+                        exc_info=ex,
+                    )
                 else:
                     log.error('Unexpected exception.', exc_info=ex)
 
