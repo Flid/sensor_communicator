@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+import logging
+
 from .base import Node, Message, State
-from .utils import from_string_bool
+from .utils import to_bool
 
 
-class PowerControlMessage(Message):
-    TYPE_ON = 255
-    TYPE_OFF = 254
+logger = logging.getLogger(__name__)
 
 
 class PowerControlState(State):
@@ -22,8 +22,13 @@ class PowerControlState(State):
     def _apply_new_state(self, old, new):
         if 'power_on' in new:
             self.node.set_power_state(
-                from_string_bool(new['power_on']),
+                to_bool(new['power_on']),
             )
+
+
+class PowerControlMessage(Message):
+    TYPE_ON = 255
+    TYPE_OFF = 254
 
 
 class PowerControlNode(Node):
@@ -38,6 +43,7 @@ class PowerControlNode(Node):
     LISTEN_PIPE_NUMBER = 1
 
     def set_power_state(self, is_enabled):
+        logger.info('Setting power state to %s', is_enabled)
         msg_type = self.MESSAGE_CLASS.TYPE_ON if is_enabled \
             else self.MESSAGE_CLASS.TYPE_OFF
 

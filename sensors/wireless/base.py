@@ -17,9 +17,10 @@ log = logging.getLogger(__name__)
 class State(object):
     ALLOWED_KEYS = set()
 
-    def __init__(self, node, data):
+    def __init__(self, node, data=None, is_online=True):
         self.node = node
         self.data = data
+        self.is_online = is_online
 
     @classmethod
     def _parse_raw_data(cls, raw_data):
@@ -41,11 +42,22 @@ class State(object):
         self._apply_new_state(self.data, data)
         self.data.update(data)
 
-    def dump_socket_response(self):
-        return json.dumps({
+    def render_to_response(self):
+        return {
+            'sensor': self.node.sensor.NAME,
             'node_id': self.node.NODE_ID,
-            'data': self.data,
-        })
+            'msg_stream': str(self.node.NODE_ID),
+            'is_online': self.is_online,
+            'type': 'state',
+            'state': self.data,
+        }
+
+    def send_update_message(self):
+        SServer.send_broadcast_message(
+            self.render_to_response(),
+            self.node.sensor.NAME,
+            str(self.node.NODE_ID),
+        )
 
     def __eq__(self, other):
         if not isinstance(other, State):
@@ -137,7 +149,7 @@ class Node(object):
 
     # If we do not have status update for more then N
     # seconds in a row - it's offline for us.
-    OFFLINE_AFTER_N_SECONDS = 5
+    OFFLINE_AFTER_N_SECONDS = 20
 
     MESSAGE_CLASS = Message
     STATE_CLASS = State
@@ -149,13 +161,14 @@ class Node(object):
     SEND_RETRIES = 5
     SEND_DELAY = 50  # msec
 
-    def __init__(self, radio):
+    def __init__(self, sensor, radio):
         log.info('Initializing wireless node %s', self.__class__.__name__)
         self._fields = {}
         self._errors_in_a_row = 0
         self._last_status_update_time = time()
         self._radio = radio
-        self.state = None
+        self.sensor = sensor
+        self.state = self.STATE_CLASS(self, is_online=False)
 
         if self.LISTEN_PIPE_NUMBER is not None:
             log.info(
@@ -236,27 +249,40 @@ class Node(object):
         if time() - self._last_status_update_time < self.OFFLINE_AFTER_N_SECONDS:
             # Everything's fine
             return
-        self.state = None
+        self.state = self.STATE_CLASS(self, is_online=False)
+        log.info('Device `%s` went offline', self.name)
+        self.state.send_update_message()
 
-    def process_new_message(self, msg):
+    def process_new_hw_message(self, msg):
         log.debug(
-            'Received message of type %s, data %s'
+            'Received HW message of type %s, data %s'
             % (msg.msg_type, map(int, msg.data)),
         )
+
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_STATUS:
             new_state = self.STATE_CLASS.from_message(self, msg)
 
-            SServer.send_broadcast_message(
-                new_state.dump_socket_response(),
-                self.name,
-                str(self.NODE_ID),
-            )
+            if new_state != self.state:
+                self.state = new_state
+                new_state.send_update_message()
 
-            self.state = new_state
             self._last_status_update_time = time()
 
         if msg.msg_type == self.MESSAGE_CLASS.TYPE_FIELD_RESPONSE:
             self._fields[msg.field_name] = msg.data
+
+    def process_client_message(self, data):
+        t = data['type']
+
+        if t == 'get_state':
+            return self.state.render_to_response()
+
+        if t == 'set_state':
+            self.state.update(data.get('state'))
+            self.state.send_update_message()
+            return
+
+        return {'error': 'unknown message type %s' % t}
 
     def terminate(self):
         """
@@ -271,7 +297,7 @@ class WirelessSensor(Sensor):
     When it happens, we create a node and route all message to it later.
     """
     NAME = 'nrf24l01'
-    LOOP_DELAY = 1
+    LOOP_DELAY = 0.1
     ERRORS_THRESHOLD = None
 
     RF24_PINS = [25, 8]
@@ -318,7 +344,7 @@ class WirelessSensor(Sensor):
         Open needed listening pipes for all devices.
         """
         for node_id, node_cls in self._node_by_id.iteritems():
-            self._active_nodes[node_id] = node_cls(self._radio)
+            self._active_nodes[node_id] = node_cls(self, self._radio)
 
     def _read_data_from_radio(self):
         """
@@ -336,21 +362,22 @@ class WirelessSensor(Sensor):
 
             return payload
 
-    def process_socket_message(self, data, fno):
-        pass
+    def process_client_message(self, data):
+        node_id = data.get('node_id')
+        type_ = data.get('type')
 
-    def _iteration(self):
-        """
-        Read all new messages and route them to nodes.
-        """
+        if node_id is None or not type_:
+            return {'error': 'bad format'}
 
-        # Check devices state
-        for node in self._active_nodes.itervalues():
-            node.check_if_offline()
+        node = self.get_node(node_id=node_id)
 
+        if not node:
+            return {'error': 'node not found'}
+
+        return node.process_client_message(data)
+
+    def _process_hw_messages(self):
         while True:
-            self._process_socket_messages()
-
             new_msg = self._read_data_from_radio()
             if not new_msg:
                 break
@@ -362,9 +389,24 @@ class WirelessSensor(Sensor):
                 log.warning('Message for unknown node_id=%s' % node_id)
                 continue
 
-            node.process_new_message(
+            node.process_new_hw_message(
                 node.MESSAGE_CLASS.parse(new_msg),
             )
+
+    def _iteration(self):
+        """
+        Read all new messages and route them to nodes.
+        """
+        self._process_hw_messages()
+
+
+        # Check devices state
+        for node in self._active_nodes.itervalues():
+            node.check_if_offline()
+
+        self._process_socket_messages()
+
+
 
 
 wireless_sensor = WirelessSensor()

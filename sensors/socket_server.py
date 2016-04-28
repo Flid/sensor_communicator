@@ -14,8 +14,13 @@ class ClientSocket(object):
         self.conn = conn
         self.initialized = False
 
+        # Keep track of all registration, so we can clean them on removal.
+        self.registrations = set()
+
 
 class SocketServer(object):
+    EPOLL_REG_FLAGS = select.EPOLLIN | select.EPOLLERR | select.EPOLLHUP
+
     def __init__(self, port):
         self._port = port
 
@@ -29,7 +34,23 @@ class SocketServer(object):
         self._thread.start()
         self._messages = []
 
+    @staticmethod
+    def _set_keepalive(sock, after_idle_sec=30, interval_sec=10, max_fails=5):
+        """Set TCP keepalive on an open socket.
+
+        It activates after `after_idle_sec` second of idleness,
+        then sends a keepalive ping once every `interval_sec` seconds,
+        and closes the connection after `max_fails` failed pings.
+        """
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, after_idle_sec)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval_sec)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, max_fails)
+
     def send_message(self, data, fno):
+
+        logger.info('Sending data `%s` to %s', data, fno)
+
         self.server_lock.acquire()
 
         try:
@@ -39,6 +60,10 @@ class SocketServer(object):
                 return False
 
             sock.conn.sendall(data)
+
+            if not data.endswith('\n'):
+                sock.conn.sendall('\n')
+
             return True
         except socket.error:
             self._unregister_socket(fno)
@@ -48,9 +73,27 @@ class SocketServer(object):
             self.server_lock.release()
 
     def send_broadcast_message(self, data, sensor_name, msg_stream=''):
+
+        if not isinstance(data, basestring):
+            data = json.dumps(data)
+
         self.server_lock.acquire()
 
-        sockets = self.registrations.setdefault(sensor_name, {}).setdefault(msg_stream, [])
+        sockets = self.registrations.setdefault(
+            sensor_name,
+            {},
+        ).setdefault(
+            msg_stream,
+            set(),
+        )
+
+        logger.info(
+            'Sending broadcast socket message `%s:%s` `%s` to %s receivers',
+            sensor_name,
+            msg_stream,
+            data,
+            len(sockets),
+        )
 
         to_remove = []
 
@@ -63,6 +106,9 @@ class SocketServer(object):
 
                 try:
                     sock.conn.sendall(data)
+                    if not data.endswith('\n'):
+                        sock.conn.sendall('\n')
+
                 except socket.error:
                     self._unregister_socket(fno)
                     to_remove.append(fno)
@@ -86,6 +132,10 @@ class SocketServer(object):
         logger.info('Unregistering socket %s', fno)
         self._epoll.unregister(fno)
         self.active_sockets[fno].conn.close()
+
+        for sensor_name, msg_stream in self.active_sockets[fno].registrations:
+            self.registrations[sensor_name][msg_stream].remove(fno)
+
         del self.active_sockets[fno]
 
     def _process_message(self, fno, raw_data):
@@ -93,7 +143,7 @@ class SocketServer(object):
         logger.info('Processing message %s from %s', raw_data, fno)
 
         data = json.loads(raw_data)
-        sensor_name = data['sensor_name']
+        sensor_name = data['sensor']
 
         if data['type'] == 'register':
             msg_stream = data.get('msg_stream', '')
@@ -109,8 +159,9 @@ class SocketServer(object):
                 {},
             ).setdefault(
                 msg_stream,
-                [],
-            ).append(fno)
+                set(),
+            ).add(fno)
+            self.active_sockets[fno].registrations.add((sensor_name, msg_stream))
         else:
             self._messages.append((sensor_name, data, fno))
 
@@ -120,7 +171,9 @@ class SocketServer(object):
             logger.info('New connection from %s', address)
 
             connection.setblocking(0)
-            self._epoll.register(connection.fileno(), select.EPOLLIN | select.EPOLLERR | select.EPOLLHUP)
+            self._set_keepalive(connection)
+
+            self._epoll.register(connection.fileno(), self.EPOLL_REG_FLAGS)
 
             with self.server_lock:
                 self.active_sockets[connection.fileno()] = ClientSocket(connection)
@@ -132,17 +185,25 @@ class SocketServer(object):
                     self._unregister_socket(fno)
                 return
 
-            try:
-                self._process_message(fno, data)
-            except Exception as ex:
-                logger.warning(
-                    'Error while processing socket message:',
-                    exc_info=ex,
-                )
+            messages = data.split('\n')
+
+            for message in messages:
+                if not message:
+                    continue
+
+                try:
+                    self._process_message(fno, message)
+                except Exception as ex:
+                    logger.warning(
+                        'Error while processing socket message:',
+                        exc_info=ex,
+                    )
 
         elif event & select.EPOLLHUP:
             with self.server_lock:
                 self._unregister_socket(fno)
+        else:
+            logger.error('Unprocessed epoll event: %s', event)
 
     def _listener(self):
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -150,9 +211,8 @@ class SocketServer(object):
         server_socket.bind(('0.0.0.0', self._port))
         server_socket.listen(10)
         server_socket.setblocking(0)
-        ss_fno = server_socket.fileno()
 
-        self._epoll.register(ss_fno, select.EPOLLIN | select.EPOLLERR | select.EPOLLHUP)
+        self._epoll.register(server_socket.fileno(), self.EPOLL_REG_FLAGS)
 
         while True:
             events = self._epoll.poll(1)

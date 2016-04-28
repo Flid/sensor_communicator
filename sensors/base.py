@@ -38,8 +38,6 @@ class Sensor(object):
 
         self.set_value('status', self.STATUS_IDLE)
 
-        assert isinstance(self.LOOP_DELAY, int)
-
     def start(self):
         log.info('Starting sensor %s', self.NAME)
         Sensor._active_sensors.append(self)
@@ -85,8 +83,13 @@ class Sensor(object):
     @staticmethod
     def by_name(name):
         for sensor in Sensor._active_sensors:
-            if sensor.name == name:
+            if sensor.NAME == name:
                 return sensor
+
+    def process_message(self, data):
+        """
+        By default all messages are just ignored
+        """
 
     def _process_socket_messages(self):
         for sensor_name, data, fno in SServer.get_messages():
@@ -97,7 +100,15 @@ class Sensor(object):
                 continue
 
             try:
-                sensor.process_socket_message()
+                response = sensor.process_client_message(data)
+
+                if response is None:
+                    return
+
+                if not isinstance(response, basestring):
+                    response = json.dumps(response)
+
+                SServer.send_message(response, fno)
             except Exception as ex:
                 log.warning('Error while processing socket message:', exc_info=ex)
 
@@ -111,7 +122,6 @@ class Sensor(object):
                 if isinstance(ex, SensorError):
                     log.error(
                         'Error getting %s sensor data: %s' % (self.__class__, ex),
-                        exc_info=ex,
                     )
                 else:
                     log.error('Unexpected exception.', exc_info=ex)
@@ -120,10 +130,15 @@ class Sensor(object):
                 if self.ERRORS_THRESHOLD and self._errors_count >= self.ERRORS_THRESHOLD:
                     self.set_value('status', self.STATUS_ERROR)
             finally:
-                for _ in xrange(self.LOOP_DELAY):
+                if self.LOOP_DELAY < 1:
+                    num, t = 1, self.LOOP_DELAY
+                else:
+                    num, t = int(self.LOOP_DELAY), 1
+
+                for _ in xrange(num):
                     if self.should_stop:
                         return
-                    sleep(1)
+                    sleep(t)
 
     def db_execute(self, command):
         if not self._conn:
