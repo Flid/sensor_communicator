@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+"""
+Simple class, that works with DHT22 temperature/humidity sensor.
+"""
+
 import logging
 import json
 

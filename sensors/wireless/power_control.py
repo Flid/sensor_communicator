@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+"""
+Simple wireless device, that can be turned on/off remotely.
+"""
 from __future__ import unicode_literals
 
 import logging

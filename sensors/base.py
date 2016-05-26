@@ -1,4 +1,22 @@
 # -*- coding: utf-8 -*-
+
+"""
+Sensors concept description:
+"Sensor" is a worker, that runs in a separate thread. It periodically communicates
+with some piece of hardware or network service,  caches the data and makes it
+available for internal consumers.
+
+Why do we need a separate service for that? Because:
+* it has to be python2.7, because there are lots of libraries with C-extensions,
+  which do not support python3. We do not want to patch them all.
+* it allows to decrease the number of requests to external
+  services and make consumers' work more smooth.
+* dividing a code into logical pieces is good!
+
+Every sensor has a local cache (memory dict), that can be accessed
+with public methods `get_value` and `set_value`.
+"""
+
 from threading import Thread, Lock
 import logging
 from time import sleep
@@ -18,12 +36,18 @@ class SensorError(Exception):
 
 
 class Sensor(object):
+    """
+    Read module docstring for info.
+    """
     STATUS_ERROR = 'error'
     STATUS_OK = 'ok'
     STATUS_IDLE = 'idle'
 
     LOOP_DELAY = 1
     ERRORS_THRESHOLD = 10
+
+    # Set to True to ask worker to stop at the end of the current
+    # iteration (usually no longer than 1 second).
     DB_ENABLED = False
     NAME = '<NoName>'
     _active_sensors = []

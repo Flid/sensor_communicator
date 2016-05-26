@@ -1,3 +1,12 @@
+"""
+Weather sensor.
+Retrieves the current weather and weather forecasts from  openweathermap.org
+API once in a while and caches it to be easily retrieved later.
+
+We separately calculate "rain forecast rating", like some measure of umbrella
+necessity today... It's England, I need it!
+"""
+
 import requests
 import json
 import logging

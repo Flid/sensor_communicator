@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+
+"""
+Fast and reliable way to provide sensors' interface. Main point - ability to
+push state changes to all registered consumers directly and without HTTP overhead,
+just send JSON data directly.
+"""
+
 from __future__ import unicode_literals
 from threading import Thread, Lock
 import socket
@@ -48,7 +55,11 @@ class SocketServer(object):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, max_fails)
 
     def send_message(self, data, fno):
-
+        """
+        Send a message to one consumer directly. Main use - react to
+        some immediate request from consumer.
+        :param data: string to be sent.
+        """
         logger.info('Sending data `%s` to %s', data, fno)
 
         self.server_lock.acquire()
@@ -73,6 +84,12 @@ class SocketServer(object):
             self.server_lock.release()
 
     def send_broadcast_message(self, data, sensor_name, msg_stream=''):
+        """
+        Send a message to all consumers, registered to the sensor and stream.
+        Main use - broadcast a state change.
+
+        :param data: string to be sent.
+        """
 
         if not isinstance(data, basestring):
             data = json.dumps(data)
@@ -129,6 +146,9 @@ class SocketServer(object):
         return output
 
     def _unregister_socket(self, fno):
+        """
+        Close the socket and remove from the local queue.
+        """
         logger.info('Unregistering socket %s', fno)
         self._epoll.unregister(fno)
         self.active_sockets[fno].conn.close()
@@ -166,6 +186,11 @@ class SocketServer(object):
             self._messages.append((sensor_name, data, fno))
 
     def _process_event(self, server_socket, fno, event):
+        """
+        Process a new EPOLL event.
+        """
+
+        # New incoming socket connection.
         if fno == server_socket.fileno():
             connection, address = server_socket.accept()
             logger.info('New connection from %s', address)
@@ -178,6 +203,7 @@ class SocketServer(object):
             with self.server_lock:
                 self.active_sockets[connection.fileno()] = ClientSocket(connection)
 
+        # New message from consumer
         elif event & select.EPOLLIN:
             data = self.active_sockets[fno].conn.recv(4096)
             if not data:
@@ -199,11 +225,12 @@ class SocketServer(object):
                         exc_info=ex,
                     )
 
+        # Socket has died.
         elif event & select.EPOLLHUP:
             with self.server_lock:
                 self._unregister_socket(fno)
         else:
-            logger.error('Unprocessed epoll event: %s', event)
+            logger.critical('Unprocessed epoll event: %s', event)
 
     def _listener(self):
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

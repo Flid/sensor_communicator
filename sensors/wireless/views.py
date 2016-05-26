@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+"""
+REST way of reading wireless device state.
+Should only be used when SocketServer approach is unavailable.
+"""
 from __future__ import unicode_literals
 
 import logging

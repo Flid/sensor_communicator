@@ -15,6 +15,12 @@ log = logging.getLogger(__name__)
 
 
 class State(object):
+    """
+    "Wireless" is a special type of sensor, which works with NRF24L01+ wireless sensor
+    attached. It provides an abstraction for wireless devices connected, allowing to
+    send them messages and receive their current states.
+    """
+
     ALLOWED_KEYS = set()
 
     def __init__(self, node, data=None, is_online=True):
@@ -70,6 +76,10 @@ class State(object):
 
 
 class Message(object):
+    """
+    A representation of a bytestring being sent to/from wireless device.
+    Helps to parse or format a message.
+    """
     MAX_DATA_LEN = 31  # Max payload size one byte for message type
 
     # Send every N seconds. After M times without response node gows offline.
@@ -142,6 +152,10 @@ class Message(object):
 
 
 class Node(object):
+    """
+    Node represents a single wireless device with its own ID and hardware address.
+    It helps to communicate with a single the device directly.
+    """
     NODE_ID = None
     LISTEN_PIPE_ADDR = None
     LISTEN_PIPE_NUMBER = None
