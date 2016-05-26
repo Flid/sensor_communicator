@@ -5,7 +5,7 @@ import socket
 import json
 from threading import Lock
 
-from RF24 import RF24_PA_HIGH, RF24_250KBPS, RF24
+from RF24 import RF24_PA_MAX, RF24_PA_HIGH, RF24_250KBPS, RF24
 import RPi.GPIO as GPIO
 
 from ..base import Sensor, SensorError
@@ -117,7 +117,7 @@ class Message(object):
         msg = cls(node_id, msg_type)
 
         if msg_type == cls.TYPE_STATUS:
-            msg.data = data[:1]
+            msg.data = data
             return msg
 
         elif msg_type == cls.TYPE_FIELD_RESPONSE:
@@ -260,6 +260,9 @@ class Node(object):
             )
 
     def check_if_offline(self):
+        if not self.state.is_online:
+            return
+
         if time() - self._last_status_update_time < self.OFFLINE_AFTER_N_SECONDS:
             # Everything's fine
             return
@@ -322,11 +325,13 @@ class WirelessSensor(Sensor):
 
     def __init__(self):
         super(WirelessSensor, self).__init__()
-
+        log.info('INIT1')
         from .power_control import PowerControlNode
+        from .weather import WeatherNode
 
         self._node_by_id = {
             PowerControlNode.NODE_ID: PowerControlNode,
+            WeatherNode.NODE_ID: WeatherNode,
         }
         self._active_nodes = {}
 
@@ -342,6 +347,7 @@ class WirelessSensor(Sensor):
                 return node
 
     def _get_radio(self):
+        log.info('Initializing radio...')
         radio = RF24(*self.RF24_PINS)
         radio.begin()
         radio.setRetries(self.RETRIES_DELAY, self.RETRIES_COUNT)
@@ -349,6 +355,7 @@ class WirelessSensor(Sensor):
         radio.setPALevel(RF24_PA_HIGH)
         radio.setDataRate(RF24_250KBPS)
         radio.setChannel(self.CHANNEL)
+        radio.printDetails()
         radio.startListening()
 
         return radio
